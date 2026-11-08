@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: canestreet-api
+    runtime: python
+    region: frankfurt
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: DATABASE_URL
+        sync: false   # paste the database's Internal URL in the Render dashboard
+      - key: ALLOWED_ORIGINS
+        value: https://www.canestreet.com,https://canestreet.com
+      - key: ALLOWED_ORIGIN_REGEX
+        value: https://.*\.squarespace\.com
+      - key: OPEN_STATUSES
+        value: open
+      - key: ENRICH_INDUSTRY_KEY
+        value: industry
+      - key: ENRICH_ROLE_KEY
+        value: role_type

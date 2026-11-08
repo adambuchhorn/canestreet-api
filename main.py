@@ -35,12 +35,14 @@ ROLE_KEY = os.environ.get("ENRICH_ROLE_KEY", "")
 
 # Title keywords -> role type, checked in order (Danish and English).
 ROLE_RULES = [
+    ("Security", ["security", "sikkerhed", " iam ", "identity", "cyber", " soc ", "penetration", "pentest",
+                  "informationssikkerhed", "grc", "compliance officer"]),
     ("Data & Analytics", ["data ", "data-", "dataengineer", "data engineer", "bi ", "bi-", "power bi",
-                          "analytics", "analyst data", "machine learning", "ml ", "ai engineer", "data scientist"]),
+                          "analytics", "analyst data", "machine learning", " ml ", "ai engineer", "data scientist"]),
     ("Architecture", ["architect", "arkitekt"]),
-    ("Security", ["security", "sikkerhed", "iam", "identity", "cyber", "soc "]),
     ("Project & Delivery", ["project manager", "projektleder", "projekt leder", "program manager", "programleder",
-                            "scrum", "agile coach", "pmo", "delivery", "release manager", "change manager"]),
+                            "scrum", "agile coach", "pmo", "delivery", "release manager", "change manager",
+                            "solution manager", "service manager", "it manager", "it-chef", "test manager"]),
     ("Testing", ["test", "qa ", "quality assurance"]),
     ("Infrastructure & Cloud", ["cloud", "devops", "azure", "aws", "infrastructure", "infrastruktur", "platform",
                                 "network", "netværk", "drift", "sre", "kubernetes", "linux", "windows server"]),
@@ -136,11 +138,22 @@ def cached(key: str, build):
     return value
 
 
+def _fix_text(value):
+    """Repair Danish letters stored with a broken encoding (e.g. 'KÃ¸benhavn')."""
+    if isinstance(value, str) and ("Ã" in value or "Â" in value):
+        try:
+            return value.encode("latin-1").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return value
+    return value
+
+
 def run(sql: str, params: dict | None = None) -> list[dict]:
     p = {"ik": INDUSTRY_KEY, "rk": ROLE_KEY, "open": OPEN_STATUSES}
     p.update(params or {})
     with pool.connection() as conn:
-        return conn.execute(sql, p).fetchall()
+        rows = conn.execute(sql, p).fetchall()
+    return [{k: _fix_text(v) for k, v in row.items()} for row in rows]
 
 
 def filters_sql(industry: str | None, role_type: str | None) -> str:

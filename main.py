@@ -25,8 +25,8 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 ALLOWED_ORIGINS = _list(
     "ALLOWED_ORIGINS", "https://www.canestreet.com,https://canestreet.com"
 )
-# Values of canonical_contracts.current_status that count as "open".
-OPEN_STATUSES = _list("OPEN_STATUSES", "open")
+# A contract is open unless its current_status is one of these (empty/NULL counts as open).
+CLOSED_STATUSES = _list("CLOSED_STATUSES", "closed")
 # Key inside enrichments.enrichment_json used as the industry filter.
 # It may hold a string or a list; for a list the first entry is used.
 INDUSTRY_KEY = os.environ.get("ENRICH_INDUSTRY_KEY", "domains")
@@ -35,21 +35,32 @@ ROLE_KEY = os.environ.get("ENRICH_ROLE_KEY", "")
 
 # Title keywords -> role type, checked in order (Danish and English).
 ROLE_RULES = [
-    ("Security", ["security", "sikkerhed", " iam ", "identity", "cyber", " soc ", "penetration", "pentest",
-                  "informationssikkerhed", "grc", "compliance officer"]),
+    ("Security", ["security", "sikkerhed", " iam ", "iam /", "identity", "cyber", " soc ", "penetration", "pentest",
+                  "informationssikkerhed", "grc", "compliance", "nis2", "isms", "ciso", "iso 27001", "dora ",
+                  "segmentation", "segmentering", "sikkerhedsgodkendte"]),
     ("Data & Analytics", ["data ", "data-", "dataengineer", "data engineer", "bi ", "bi-", "power bi",
-                          "analytics", "analyst data", "machine learning", " ml ", "ai engineer", "data scientist"]),
+                          "analytics", "analyst data", "machine learning", " ml ", "ai engineer", "data scientist",
+                          "data management", "datamigrering", "data warehouse", "datawarehouse", " r developer",
+                          "model validation", "ai-programmet", "fabric"]),
     ("Architecture", ["architect", "arkitekt"]),
-    ("Project & Delivery", ["project manager", "projektleder", "projekt leder", "program manager", "programleder",
-                            "scrum", "agile coach", "pmo", "delivery", "release manager", "change manager",
-                            "solution manager", "service manager", "it manager", "it-chef", "test manager"]),
+    ("Project & Delivery", ["project manager", "projektleder", "projekt leder", "projekt-", "program manager",
+                            "programleder", "scrum", "agile coach", "pmo", "delivery", "release manager",
+                            "change manager", "change &", "transition manager", "solution manager",
+                            "service manager", "it manager", "it-chef", "feasibility"]),
     ("Testing", ["test", "qa ", "quality assurance"]),
     ("Infrastructure & Cloud", ["cloud", "devops", "azure", "aws", "infrastructure", "infrastruktur", "platform",
-                                "network", "netværk", "drift", "sre", "kubernetes", "linux", "windows server"]),
-    ("Business Analysis", ["business analyst", "forretningsanalytiker", "product owner", "produktejer",
-                           "requirements", "process", "proces", "konsulent sap", "functional"]),
+                                "network", "netværk", "drift", "sre", "kubernetes", "linux", "windows server",
+                                "server", "storage", "backup", "commvault", "mainframe", "itsm", "datadog",
+                                "nexthink", "monitorering"]),
+    ("Business Applications", ["d365", "dynamics", "sap ", "s/4", "salesforce", "servicenow", "monday.com",
+                               "ls central", "outsystems", "hr digitalization", "implementeringskonsulent"]),
+    ("Business Analysis", ["business analyst", "forretningsanalytiker", "forretnings- analytiker",
+                           "forretningstester", "it analyst", "product owner", "produktejer", "requirements",
+                           "process", "proces", "functional", "risk scoring", "risk model", "kredit"]),
+    ("Design", ["designer", "ui/ux", "ux "]),
     ("Development", ["developer", "udvikler", "engineer", "programmør", "programmer", "frontend", "backend",
-                     "fullstack", "full stack", ".net", "java", "python", "react", "sap", "salesforce"]),
+                     "fullstack", "full stack", "full-stack", ".net", "java", "python", "react", "c++", "delphi",
+                     "firmware", "kafka", "integration", "konfigurator"]),
 ]
 
 
@@ -117,7 +128,7 @@ WITH latest_enrichment AS (
            NULLIF(le.ej ->> 'seniority', '') AS seniority,
            CASE WHEN le.ej ->> 'duration_months' ~ '^[0-9]+(\\.[0-9]+)?$'
                 THEN (le.ej ->> 'duration_months')::numeric END AS duration_months,
-           (cc.current_status = ANY(%(open)s)) AS is_open,
+           (COALESCE(cc.current_status, '') <> ALL(%(closed)s)) AS is_open,
            LEFT(cc.first_seen_at, 10)::date AS first_seen_day
     FROM canonical_contracts cc
     LEFT JOIN latest_enrichment le ON le.canonical_contract_id = cc.id
@@ -149,7 +160,7 @@ def _fix_text(value):
 
 
 def run(sql: str, params: dict | None = None) -> list[dict]:
-    p = {"ik": INDUSTRY_KEY, "rk": ROLE_KEY, "open": OPEN_STATUSES}
+    p = {"ik": INDUSTRY_KEY, "rk": ROLE_KEY, "closed": CLOSED_STATUSES}
     p.update(params or {})
     with pool.connection() as conn:
         rows = conn.execute(sql, p).fetchall()
@@ -331,6 +342,107 @@ def market(
             "open_by_role_type": by_role,
             "top_roles": top_roles,
             **remote,
+        }
+
+    return cached(key, build)
+
+
+# Columns that may record when a contract closed, best first. The first ones
+# that exist in canonical_contracts are used (override with CLOSED_AT_COLUMNS).
+CLOSED_AT_CANDIDATES = _list(
+    "CLOSED_AT_COLUMNS",
+    "closed_at,status_changed_at,last_seen_at,last_seen,updated_at,close_date",
+)
+_closed_cols: list[str] | None = None
+
+
+def closed_columns() -> list[str]:
+    global _closed_cols
+    if _closed_cols is None:
+        have = {
+            r["column_name"]
+            for r in run(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'canonical_contracts'"
+            )
+        }
+        _closed_cols = [c for c in CLOSED_AT_CANDIDATES if c in have]
+    return _closed_cols
+
+
+def _day(col: str) -> str:
+    return (
+        f"CASE WHEN LEFT(cc.{col}::text, 10) ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$' "
+        f"THEN LEFT(cc.{col}::text, 10)::date END"
+    )
+
+
+@app.get("/niche")
+def niche(
+    weeks: int = Query(26, ge=4, le=104),
+    role_type: str | None = None,
+):
+    """Is a niche growing? Weekly new and closed contracts per role type,
+    open contracts at the end of each week, and (for the chosen role type)
+    which industries are asking for it right now."""
+    key = f"niche:{weeks}:{role_type}"
+
+    def build():
+        cols = closed_columns()
+        closed_expr = "COALESCE(" + ", ".join(_day(c) for c in cols) + ")" if cols else "NULL::date"
+        params = {"weeks": weeks, "role_type": role_type}
+        cte = (
+            BASE
+            + f"""
+            , cl AS (
+                SELECT cc.id, {closed_expr} AS closed_day
+                FROM canonical_contracts cc
+            ), x AS (
+                SELECT c.*, CASE WHEN c.is_open THEN NULL
+                                 ELSE COALESCE(cl.closed_day, c.first_seen_day) END AS closed_day
+                FROM c JOIN cl ON cl.id = c.id
+            ), w AS (
+                SELECT generate_series(
+                    date_trunc('week', CURRENT_DATE) - (%(weeks)s - 1) * INTERVAL '1 week',
+                    date_trunc('week', CURRENT_DATE),
+                    INTERVAL '1 week')::date AS week
+            )
+            """
+        )
+        weekly = run(
+            cte
+            + """
+            , r AS (SELECT DISTINCT COALESCE(role_type, 'Other') AS role_type FROM x)
+            SELECT w.week, r.role_type,
+                   COUNT(x.id) FILTER (WHERE date_trunc('week', x.first_seen_day)::date = w.week) AS new,
+                   COUNT(x.id) FILTER (WHERE date_trunc('week', x.closed_day)::date = w.week) AS closed,
+                   COUNT(x.id) FILTER (WHERE x.first_seen_day < w.week + 7
+                                         AND (x.closed_day IS NULL OR x.closed_day >= w.week + 7)) AS open_end
+            FROM w CROSS JOIN r
+            LEFT JOIN x ON COALESCE(x.role_type, 'Other') = r.role_type
+            GROUP BY w.week, r.role_type
+            ORDER BY w.week, r.role_type
+            """,
+            params,
+        )
+        ind_filter = "AND role_type = %(role_type)s" if role_type else ""
+        industries = run(
+            cte
+            + f"""
+            SELECT COALESCE(industry,
+                            NULLIF(substring(customer from '^(.+?) client$'), ''),
+                            'Not stated') AS label,
+                   COUNT(*) AS count
+            FROM x WHERE is_open {ind_filter}
+            GROUP BY 1 ORDER BY 2 DESC, 1
+            """,
+            params,
+        )
+        return {
+            "role_type": role_type,
+            "closed_basis": cols,
+            "weekly": weekly,
+            "open_by_industry": industries,
         }
 
     return cached(key, build)

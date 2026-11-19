@@ -116,6 +116,9 @@ WITH latest_enrichment AS (
     ORDER BY canonical_contract_id, id DESC
 ), c AS (
     SELECT cc.id, cc.contract_uid, cc.title, cc.customer,
+           COALESCE(cc.skills, '[]'::jsonb) AS skills,
+           COALESCE(cc.required_skills, '[]'::jsonb) AS required_skills,
+           COALESCE(cc.technologies, '[]'::jsonb) AS technologies,
            COALESCE(NULLIF(le.ej ->> 'location_city', ''), cc.location_text) AS location_text,
            cc.first_seen_at, cc.create_date, cc.close_date, cc.current_status,
            NULLIF(CASE jsonb_typeof(le.ej -> %(ik)s)
@@ -249,6 +252,7 @@ def contracts(
             + f"""
             SELECT c.contract_uid AS id, c.title, c.customer, c.location_text AS location,
                    c.industry, c.role_type, c.work_model, c.seniority, c.duration_months,
+                   c.skills, c.required_skills, c.technologies,
                    c.create_date AS posted, c.close_date AS closes,
                    (SELECT rl.url
                       FROM canonical_listing_links l

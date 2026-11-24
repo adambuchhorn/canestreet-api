@@ -14,8 +14,10 @@ DB_FREELANCE_MARKET database. It can only read, never change, the database.
 | `/health` | Render's uptime check |
 
 It reads `canonical_contracts` (open = `current_status` is `open`), the
-newest row per contract in `enrichments` (`domains` as industry,
-`work_model`, `seniority`, `duration_months`, `location_city`),
+`industry` column (written by the worker, with its confidence threshold and keyword
+fallbacks; contracts whose listing does not reveal the client's industry are shown as
+"Not disclosed", kept apart from "Other"), the newest row per contract in `enrichments`
+(`work_model`, `seniority`, `duration_months`, `location_city`),
 `canonical_listing_links` + `raw_listings` (the link to the original
 listing) and `source_runs` (last update time). Role type is worked out from
 the contract title with Danish and English keywords (`ROLE_RULES` in
@@ -39,7 +41,9 @@ the contract title with Danish and English keywords (`ROLE_RULES` in
 | `ALLOWED_ORIGINS` | canestreet.com with and without www | Websites allowed to call the API |
 | `ALLOWED_ORIGIN_REGEX` | any `*.squarespace.com` | Lets the new site work on its temporary address |
 | `OPEN_STATUSES` | `open` | `current_status` values that count as open (comma-separated) |
-| `ENRICH_INDUSTRY_KEY` | `domains` | Key in `enrichment_json` used as industry (text or list; first entry used) |
+| `INDUSTRY_SOURCE` | `classification` | `classification` = `canonical_contracts.industry`; `enrichment` = raw `ENRICH_INDUSTRY_KEY` from `enrichment_json` |
+| `INDUSTRY_NOT_DISCLOSED_LABEL` | `Not disclosed` | Label for contracts with no known industry (also accepted as an `industry` filter) |
+| `ENRICH_INDUSTRY_KEY` | `domains` | Key in `enrichment_json` used as industry when `INDUSTRY_SOURCE=enrichment` (text or list; first entry used) |
 | `ENRICH_ROLE_KEY` | empty | Optional key in `enrichment_json` with a role type; empty = derive from title |
 | `CACHE_SECONDS` | `300` | How long answers are cached |
 

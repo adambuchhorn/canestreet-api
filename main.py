@@ -27,9 +27,17 @@ ALLOWED_ORIGINS = _list(
 )
 # A contract is open unless its current_status is one of these (empty/NULL counts as open).
 CLOSED_STATUSES = _list("CLOSED_STATUSES", "closed")
-# Key inside enrichments.enrichment_json used as the industry filter.
+# Where industry comes from:
+#   "classification" (default): canonical_contracts.industry, written by the worker. It applies the
+#     enrichment confidence threshold and keyword fallbacks; 'Unknown' means not disclosed.
+#   "enrichment": the raw key ENRICH_INDUSTRY_KEY inside the latest enrichments.enrichment_json.
+INDUSTRY_SOURCE = os.environ.get("INDUSTRY_SOURCE", "classification")
+# Key inside enrichments.enrichment_json used when INDUSTRY_SOURCE=enrichment.
 # It may hold a string or a list; for a list the first entry is used.
 INDUSTRY_KEY = os.environ.get("ENRICH_INDUSTRY_KEY", "domains")
+# Label for contracts whose listing does not reveal the client's industry. Kept apart from
+# "Other", which is a real industry outside the named categories.
+NOT_DISCLOSED = os.environ.get("INDUSTRY_NOT_DISCLOSED_LABEL", "Not disclosed")
 # Role type is derived from the contract title (there is no role field).
 ROLE_KEY = os.environ.get("ENRICH_ROLE_KEY", "")
 
@@ -105,6 +113,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+if INDUSTRY_SOURCE == "enrichment":
+    INDUSTRY_EXPR = """NULLIF(CASE jsonb_typeof(le.ej -> %(ik)s)
+                      WHEN 'array' THEN le.ej -> %(ik)s ->> 0
+                      ELSE le.ej ->> %(ik)s END, '')"""
+else:
+    INDUSTRY_EXPR = "NULLIF(NULLIF(cc.industry, ''), 'Unknown')"
+
 # One shared definition of a contract: the latest enrichment per contract
 # supplies industry and role type.
 BASE = (
@@ -121,9 +136,9 @@ WITH latest_enrichment AS (
            COALESCE(cc.technologies, '[]'::jsonb) AS technologies,
            COALESCE(NULLIF(le.ej ->> 'location_city', ''), cc.location_text) AS location_text,
            cc.first_seen_at, cc.create_date, cc.close_date, cc.current_status,
-           NULLIF(CASE jsonb_typeof(le.ej -> %(ik)s)
-                      WHEN 'array' THEN le.ej -> %(ik)s ->> 0
-                      ELSE le.ej ->> %(ik)s END, '') AS industry,
+           """
+    + INDUSTRY_EXPR
+    + """ AS industry,
            """
     + ROLE_EXPR
     + """ AS role_type,
@@ -163,7 +178,7 @@ def _fix_text(value):
 
 
 def run(sql: str, params: dict | None = None) -> list[dict]:
-    p = {"ik": INDUSTRY_KEY, "rk": ROLE_KEY, "closed": CLOSED_STATUSES}
+    p = {"ik": INDUSTRY_KEY, "rk": ROLE_KEY, "closed": CLOSED_STATUSES, "nd": NOT_DISCLOSED}
     p.update(params or {})
     with pool.connection() as conn:
         rows = conn.execute(sql, p).fetchall()
@@ -172,7 +187,9 @@ def run(sql: str, params: dict | None = None) -> list[dict]:
 
 def filters_sql(industry: str | None, role_type: str | None) -> str:
     parts = ["is_open"]
-    if industry:
+    if industry == NOT_DISCLOSED:
+        parts.append("industry IS NULL")
+    elif industry:
         parts.append("industry = %(industry)s")
     if role_type:
         parts.append("role_type = %(role_type)s")
@@ -223,7 +240,7 @@ def filters():
                 """
             )
 
-        return {"industries": counts("industry"), "role_types": counts("role_type")}
+        return {"industries": counts("COALESCE(industry, %(nd)s)"), "role_types": counts("role_type")}
 
     return cached("filters", build)
 
@@ -288,7 +305,10 @@ def market(
 
     def build():
         params = {"weeks": weeks, "industry": industry}
-        ind = "AND industry = %(industry)s" if industry else ""
+        if industry == NOT_DISCLOSED:
+            ind = "AND industry IS NULL"
+        else:
+            ind = "AND industry = %(industry)s" if industry else ""
         weekly = run(
             BASE
             + f"""
@@ -308,7 +328,7 @@ def market(
         by_industry = run(
             BASE
             + """
-            SELECT COALESCE(industry, 'Other') AS label, COUNT(*) AS count
+            SELECT COALESCE(industry, %(nd)s) AS label, COUNT(*) AS count
             FROM c WHERE is_open GROUP BY 1 ORDER BY 2 DESC
             """
         )
@@ -435,7 +455,7 @@ def niche(
             + f"""
             SELECT COALESCE(industry,
                             NULLIF(substring(customer from '^(.+?) client$'), ''),
-                            'Not stated') AS label,
+                            %(nd)s) AS label,
                    COUNT(*) AS count
             FROM x WHERE is_open {ind_filter}
             GROUP BY 1 ORDER BY 2 DESC, 1
